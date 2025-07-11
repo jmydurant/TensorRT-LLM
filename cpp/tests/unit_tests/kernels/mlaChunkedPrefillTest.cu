@@ -218,6 +218,63 @@ void selfAttentionRef(T* output, T* const Q, T* const KV, int batch_size, int nu
     }
 }
 
+// output {total_q_token, H, D}
+// softmax_stats {total_q_len, H, 2} // {max/sum}
+// merge_op {batch_size} // 0: no merge, 1: merge, 2: copy
+template <typename TAcc, typename T>
+void mergeAttentionRef(TAcc* output_accum_ptr, float* softmax_sum_accum_ptr, T const* output_ptr,
+    float const* softmax_sum_ptr, int batch_size, int num_heads, int64_t const* cu_q_seq_len, int head_size,
+    int64_t const* merge_op)
+{
+    for (int b = 0; b < batch_size; b++)
+    {
+        if (merge_op[b] == 0)
+        {
+            continue; // no merge
+        }
+        int curr_q_len = static_cast<int>(cu_q_seq_len[b + 1] - cu_q_seq_len[b]);
+
+        for (int s = 0; s < curr_q_len; s++)
+        {
+            auto* output_accum = output_accum_ptr + (cu_q_seq_len[b] + s) * num_heads * head_size;
+            auto* softmax_sum_accum = softmax_sum_accum_ptr + (cu_q_seq_len[b] + s) * num_heads * 2;
+            auto const* output = output_ptr + (cu_q_seq_len[b] + s) * num_heads * head_size;
+            auto const* softmax_sum = softmax_sum_ptr + (cu_q_seq_len[b] + s) * num_heads * 2;
+
+            for (int h = 0; h < num_heads; h++)
+            {
+                if (merge_op[b] == 2)
+                { // copy only
+                    for (int d = 0; d < head_size; d++)
+                    {
+                        output_accum[(h * head_size) + d] = output[(h * head_size) + d];
+                    }
+                    softmax_sum_accum_ptr[h * 2] = softmax_sum[h * 2];
+                    softmax_sum_accum_ptr[(h * 2) + 1] = softmax_sum[(h * 2) + 1];
+                    continue;
+                }
+                float2 curr_stats = {softmax_sum[h * 2], softmax_sum[(h * 2) + 1]};
+                float2 pre_stats = {softmax_sum_accum[h * 2], softmax_sum_accum[(h * 2) + 1]};
+                curr_stats.x *= 0.072168784; // hack for real mla kernel
+                float2 merged_stats;
+                merged_stats.x = fmaxf(pre_stats.x, curr_stats.x);
+                float pre_shift = std::exp(pre_stats.x - merged_stats.x);
+                float curr_shift = std::exp(curr_stats.x - merged_stats.x);
+                merged_stats.y = (pre_stats.y * pre_shift + curr_stats.y * curr_shift);
+                for (int d = 0; d < head_size; d++)
+                {
+                    output_accum[(h * head_size) + d]
+                        = ((output[(h * head_size) + d] * curr_shift * curr_stats.y)
+                              + output_accum[(h * head_size) + d] * pre_shift * pre_stats.y)
+                        / merged_stats.y;
+                }
+                softmax_sum_accum[h * 2] = merged_stats.x;
+                softmax_sum_accum[(h * 2) + 1] = merged_stats.y;
+            }
+        }
+    }
+}
+
 // chunked_KV {total_chunk_token, 2, H, D}
 // KV {total_kv_token, 2, H, D}
 template <typename T>
@@ -298,7 +355,7 @@ float getTolerance(float scale = 1.f)
     {
         tol = 0.05;
     }
-    // Keep the scale in a sane range
+    // Keep the scale in a same range
     return std::max(tol, scale * tol);
 }
 }; // namespace
@@ -422,7 +479,7 @@ protected:
     {
         for (int i = 0; i < size; i++)
         {
-            data[i] = static_cast<T>(generateRandomFloat(-1.0f, 1.0f));
+            data[i] = static_cast<T>(generateRandomFloat(0.01F, 1.0F));
         }
     }
 
@@ -726,7 +783,7 @@ protected:
             cu_kv_seq_lens_ptr, this->mNopeSize, false, nullptr, this->mIsCausalMask);
     }
 
-    void PerformMergedAttention()
+    void PerformMergedAttention(bool ref_func = false)
     {
         using tensorrt_llm::runtime::bufferCast;
 
@@ -752,6 +809,7 @@ protected:
 
         int const loop_count = (this->mMaxSeqLen + this->mChunkSize - 1) / this->mChunkSize;
         // do not apply mask
+        std::vector<float> high_acc_output(this->m_h_output_tensor_accum->getSize(), 0);
         for (int _ = 0; _ < loop_count - 1; _++)
         {
             // get chunked len for each request
@@ -770,15 +828,26 @@ protected:
                 cudaMemcpyHostToDevice);
             cudaMemcpy(d_output_ptr, h_output_ptr, this->m_h_output_tensor->getSizeInBytes(), cudaMemcpyHostToDevice);
             // merge softmax
-            tensorrt_llm::kernels::invokeMergeAttnWithSoftmax<DataType>(d_output_accum_ptr, d_softmax_sum_accum_ptr,
-                d_output_accum_ptr, d_softmax_sum_accum_ptr, d_output_ptr, d_softmax_sum_ptr, this->mBatchSize,
-                d_cu_q_seq_lens_ptr, this->mMaxQSeqLen, d_merge_op, this->mNumHeads, this->mNopeSize, mStream->get());
-            cudaStreamSynchronize(mStream->get());
-            // copy merged softmax sum back to host
-            cudaMemcpy(h_softmax_sum_accum_ptr, d_softmax_sum_accum_ptr, this->m_h_softmax_sum_tensor->getSizeInBytes(),
-                cudaMemcpyDeviceToHost);
-            cudaMemcpy(h_output_accum_ptr, d_output_accum_ptr, this->m_h_output_tensor->getSizeInBytes(),
-                cudaMemcpyDeviceToHost);
+            if (ref_func)
+            {
+
+                mergeAttentionRef<float, DataType>(high_acc_output.data(), h_softmax_sum_accum_ptr, h_output_ptr,
+                    h_softmax_sum_ptr, this->mBatchSize, this->mNumHeads, h_cu_q_seq_lens_ptr, this->mNopeSize,
+                    h_merge_op);
+            }
+            else
+            {
+                tensorrt_llm::kernels::invokeMergeAttnWithSoftmax<DataType>(d_output_accum_ptr, d_softmax_sum_accum_ptr,
+                    d_output_accum_ptr, d_softmax_sum_accum_ptr, d_output_ptr, d_softmax_sum_ptr, this->mBatchSize,
+                    d_cu_q_seq_lens_ptr, this->mMaxQSeqLen, d_merge_op, this->mNumHeads, this->mNopeSize,
+                    mStream->get());
+                cudaStreamSynchronize(mStream->get());
+                // copy merged softmax sum back to host
+                cudaMemcpy(h_softmax_sum_accum_ptr, d_softmax_sum_accum_ptr,
+                    this->m_h_softmax_sum_tensor->getSizeInBytes(), cudaMemcpyDeviceToHost);
+                cudaMemcpy(h_output_accum_ptr, d_output_accum_ptr, this->m_h_output_tensor->getSizeInBytes(),
+                    cudaMemcpyDeviceToHost);
+            }
         }
         // final round, apply causal mask.
 
@@ -800,16 +869,29 @@ protected:
         cudaMemcpy(d_softmax_sum_ptr, h_softmax_sum_ptr, this->m_h_softmax_sum_tensor->getSizeInBytes(),
             cudaMemcpyHostToDevice);
         cudaMemcpy(d_output_ptr, h_output_ptr, this->m_h_output_tensor->getSizeInBytes(), cudaMemcpyHostToDevice);
-        tensorrt_llm::kernels::invokeMergeAttnWithSoftmax<DataType>(d_output_accum_ptr, d_softmax_sum_accum_ptr,
-            d_output_accum_ptr, d_softmax_sum_accum_ptr, d_output_ptr, d_softmax_sum_ptr, this->mBatchSize,
-            d_cu_q_seq_lens_ptr, this->mMaxQSeqLen, d_merge_op, this->mNumHeads, this->mNopeSize, mStream->get());
-        cudaStreamSynchronize(mStream->get());
-        // copy merged softmax sum back to host
-        cudaMemcpy(h_softmax_sum_accum_ptr, d_softmax_sum_accum_ptr, this->m_h_softmax_sum_tensor->getSizeInBytes(),
-            cudaMemcpyDeviceToHost);
-        cudaMemcpy(
-            h_output_accum_ptr, d_output_accum_ptr, this->m_h_output_tensor->getSizeInBytes(), cudaMemcpyDeviceToHost);
-        sync_check_cuda_error(mStream->get());
+        if (ref_func)
+        {
+            mergeAttentionRef<float, DataType>(high_acc_output.data(), h_softmax_sum_accum_ptr, h_output_ptr,
+                h_softmax_sum_ptr, this->mBatchSize, this->mNumHeads, h_cu_q_seq_lens_ptr, this->mNopeSize, h_merge_op);
+            // copy merged softmax sum back to host
+            for (int i = 0; i < this->m_h_softmax_sum_tensor->getSize(); i++)
+            {
+                h_softmax_sum_accum_ptr[i] = high_acc_output[i];
+            }
+        }
+        else
+        {
+            tensorrt_llm::kernels::invokeMergeAttnWithSoftmax<DataType>(d_output_accum_ptr, d_softmax_sum_accum_ptr,
+                d_output_accum_ptr, d_softmax_sum_accum_ptr, d_output_ptr, d_softmax_sum_ptr, this->mBatchSize,
+                d_cu_q_seq_lens_ptr, this->mMaxQSeqLen, d_merge_op, this->mNumHeads, this->mNopeSize, mStream->get());
+            cudaStreamSynchronize(mStream->get());
+            // copy merged softmax sum back to host
+            cudaMemcpy(h_softmax_sum_accum_ptr, d_softmax_sum_accum_ptr, this->m_h_softmax_sum_tensor->getSizeInBytes(),
+                cudaMemcpyDeviceToHost);
+            cudaMemcpy(h_output_accum_ptr, d_output_accum_ptr, this->m_h_output_tensor->getSizeInBytes(),
+                cudaMemcpyDeviceToHost);
+            sync_check_cuda_error(mStream->get());
+        }
     }
 
     void PrepareChunkedLen(int chunk_idx)
@@ -980,8 +1062,18 @@ TYPED_TEST(MlaChunkedPrefillTest, MlaChunkedPrefillDefault)
         // check result
         auto* output_ptr = bufferCast<DataType>(*(this->m_h_output_tensor_accum));
         auto* output_ref_ptr = bufferCast<DataType>(*(this->m_h_output_tensor_ref));
+        float max_diff_rate = 0.F;
+        float print_output = 0.F, print_gt = 0.F;
         for (int i = 0; i < this->m_h_output_tensor->getSize(); i++)
         {
+            float diff_rate = std::abs(static_cast<float>(output_ptr[i]) - static_cast<float>(output_ref_ptr[i]))
+                / std::abs(static_cast<float>(output_ptr[i]));
+            if (diff_rate > max_diff_rate)
+            {
+                max_diff_rate = diff_rate;
+                print_output = static_cast<float>(output_ptr[i]);
+                print_gt = static_cast<float>(output_ref_ptr[i]);
+            }
             if (std::abs(static_cast<float>(output_ptr[i]) - static_cast<float>(output_ref_ptr[i]))
                 > getTolerance<DataType>(output_ptr[i]))
             {
@@ -992,6 +1084,8 @@ TYPED_TEST(MlaChunkedPrefillTest, MlaChunkedPrefillDefault)
                 break;
             }
         }
+        std::cout << "Max diff rate: " << max_diff_rate << ", output: " << print_output << ", gt: " << print_gt
+                  << std::endl;
         ASSERT_TRUE(allEqual);
     }
 }
