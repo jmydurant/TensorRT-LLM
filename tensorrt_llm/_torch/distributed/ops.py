@@ -960,3 +960,19 @@ class MoEAllReduce(nn.Module):
                 nranks=self.mapping.tp_size,
                 eps=all_reduce_params.eps,
             )
+
+
+class MiniMaxAllReduceRMS(nn.Module):
+
+    def __init__(self, mapping: Mapping):
+        super().__init__()
+        self.mapping = mapping
+        self.workspace = get_allreduce_workspace(self.mapping)
+
+    def forward(self, input: torch.Tensor, rms_weights: torch.Tensor,
+                eps: float):
+        return torch.ops.trtllm.minimax_allreduce_rms(input, rms_weights,
+                                                      self.workspace,
+                                                      self.mapping.tp_rank,
+                                                      self.mapping.tp_size, eps,
+                                                      False)
