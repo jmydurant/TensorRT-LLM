@@ -220,6 +220,8 @@ class MiniMaxM2Attention(Attention):
 
     def apply_qk_norm(self, q, k):
         if self.qkv_proj.mapping.tp_size > 1:
+            q = q.contiguous()
+            k = k.contiguous()
             q, k = self.q_norm.minimax_all_reduce_rms.forward_qk(
                 q, k, self.q_norm.weight, self.k_norm.weight, self.q_norm.eps
             )

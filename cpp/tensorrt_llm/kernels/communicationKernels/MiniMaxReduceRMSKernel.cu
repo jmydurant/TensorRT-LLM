@@ -334,7 +334,7 @@ __global__ void __launch_bounds__(1024) minimax_reduce_rms_kernel_lamport(MiniMa
             {
                 sum_variance += vals_all_ranks[r];
             }
-            sum_variance = sqrtf(sum_variance / NRanks / static_cast<float>(params.hidden_dim) + params.rms_eps);
+            sum_variance = rsqrtf(sum_variance / NRanks / static_cast<float>(params.hidden_dim) + params.rms_eps);
             shared_vars_all_ranks = sum_variance;
         }
 
@@ -364,7 +364,7 @@ __global__ void __launch_bounds__(1024) minimax_reduce_rms_kernel_lamport(MiniMa
         // Clear comm buffer that previous kernel used
         reinterpret_cast<float4*>(comm.clear_buf)[idx] = clear_vec;
     }
-    comm.update(params.size_q * NRanks);
+    comm.update(tot_tokens * NRanks * sizeof(float) / sizeof(DType));
 #if (defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 900))
     if constexpr (TriggerCompletionAtEnd)
     {

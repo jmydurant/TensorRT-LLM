@@ -780,12 +780,10 @@ def test_minimax_allreduce_rms(mpi_pool_executor):
 
 
 @torch.inference_mode()
-def run_minimax_allreduce_rms_qk_op(q_input: torch.Tensor,
-                                    k_input: torch.Tensor,
-                                    tensor_parallel_size: int,
-                                    tensor_parallel_rank: int,
-                                    rms_weights_q: torch.Tensor,
-                                    rms_weights_k: torch.Tensor, eps: float):
+def run_minimax_allreduce_rms_qk_op(
+        q_input: torch.Tensor, k_input: torch.Tensor, tensor_parallel_size: int,
+        tensor_parallel_rank: int, rms_weights_q: torch.Tensor,
+        rms_weights_k: torch.Tensor, eps: float, non_contiguous_input: bool):
     torch.manual_seed(42)
 
     num_tokens = q_input.shape[0]
@@ -828,6 +826,22 @@ def run_minimax_allreduce_rms_qk_op(q_input: torch.Tensor,
     k_input = k_input.reshape(num_tokens, tensor_parallel_size, -1)
     rank_q_input = q_input[:, tensor_parallel_rank, :].contiguous()
     rank_k_input = k_input[:, tensor_parallel_rank, :].contiguous()
+    if non_contiguous_input:
+        # Mimic the integration path where q and k are views split from
+        # the local qkv shard.
+        rank_v_input = torch.zeros_like(rank_k_input)
+        rank_qkv_input = torch.cat([rank_q_input, rank_k_input, rank_v_input],
+                                   dim=-1)
+        rank_q_input, rank_k_input, _ = rank_qkv_input.split(
+            [
+                rank_q_input.shape[-1],
+                rank_k_input.shape[-1],
+                rank_v_input.shape[-1],
+            ],
+            dim=-1,
+        )
+        assert not rank_q_input.is_contiguous()
+        assert not rank_k_input.is_contiguous()
 
     # rms weights should be sliced by rank
     rms_weights_q = rms_weights_q.reshape(tensor_parallel_size, -1)
@@ -866,20 +880,24 @@ def run_minimax_allreduce_rms_qk_op(q_input: torch.Tensor,
 def run_minimax_allreduce_rms_qk_single_rank(tensor_parallel_size,
                                              single_rank_forward_func, q_input,
                                              k_input, rms_weights_q,
-                                             rms_weights_k, eps):
+                                             rms_weights_k, eps,
+                                             non_contiguous_input):
     rank = tensorrt_llm.mpi_rank()
     torch.cuda.set_device(rank)
     try:
         single_rank_forward_func(q_input, k_input, tensor_parallel_size, rank,
-                                 rms_weights_q, rms_weights_k, eps)
+                                 rms_weights_q, rms_weights_k, eps,
+                                 non_contiguous_input)
     except Exception:
         traceback.print_exc()
         raise
     return True
 
 
+@pytest.mark.parametrize("non_contiguous_input", [False, True],
+                         ids=["contiguous", "split_qkv_view"])
 @pytest.mark.parametrize("mpi_pool_executor", [4], indirect=True)
-def test_minimax_allreduce_rms_qk(mpi_pool_executor):
+def test_minimax_allreduce_rms_qk(mpi_pool_executor, non_contiguous_input):
     torch.manual_seed(42)
 
     seq_len = 1024
@@ -897,8 +915,8 @@ def test_minimax_allreduce_rms_qk(mpi_pool_executor):
     results = mpi_pool_executor.map(
         run_minimax_allreduce_rms_qk_single_rank,
         *zip(*[(tensor_parallel_size, run_minimax_allreduce_rms_qk_op, q_input,
-                k_input, rms_weights_q, rms_weights_k, eps)] *
-             tensor_parallel_size),
+                k_input, rms_weights_q, rms_weights_k, eps,
+                non_contiguous_input)] * tensor_parallel_size),
     )
     for r in results:
         assert r is True
