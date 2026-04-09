@@ -1827,6 +1827,13 @@ torch::Tensor minimax_allreduce_rms(torch::Tensor const& input, torch::Tensor co
     torch::Tensor workspace, int64_t const rank, int64_t const nranks, double const eps,
     bool const trigger_completion_at_end_)
 {
+    TORCH_CHECK(input.dim() == 2, "minimax_allreduce_rms: input must be 2D");
+    TORCH_CHECK(norm_weight.dim() == 1, "minimax_allreduce_rms: norm_weight must be 1D");
+    TORCH_CHECK(
+        input.size(-1) == norm_weight.size(0), "minimax_allreduce_rms: input hidden dim must match norm_weight");
+    TORCH_CHECK(input.is_contiguous(), "minimax_allreduce_rms: input must be contiguous");
+    TORCH_CHECK(norm_weight.is_contiguous(), "minimax_allreduce_rms: norm_weight must be contiguous");
+
     auto allreduce_params = tensorrt_llm::kernels::minimax_ar::MiniMaxReduceRMSParams();
 
     allreduce_params.nranks = static_cast<int>(nranks);
@@ -1854,12 +1861,25 @@ std::vector<torch::Tensor> minimax_allreduce_rms_qk(torch::Tensor const& q, torc
     torch::Tensor const& norm_weight_q, torch::Tensor const& norm_weight_k, torch::Tensor workspace, int64_t const rank,
     int64_t const nranks, double const eps, bool const trigger_completion_at_end_)
 {
+    int64_t constexpr kSupportedGlobalHeadDimQ = 6144;
+    int64_t constexpr kSupportedGlobalHeadDimK = 1024;
+
     TORCH_CHECK(q.scalar_type() == k.scalar_type(), "minimax_allreduce_rms_qk: q and k must have same dtype");
     TORCH_CHECK(q.dim() == 2 && k.dim() == 2, "minimax_allreduce_rms_qk: q and k must be 2D");
     TORCH_CHECK(q.size(0) == k.size(0), "minimax_allreduce_rms_qk: q and k must have same num_token");
+    TORCH_CHECK(q.is_contiguous(), "minimax_allreduce_rms_qk: q must be contiguous");
+    TORCH_CHECK(k.is_contiguous(), "minimax_allreduce_rms_qk: k must be contiguous");
+    TORCH_CHECK(norm_weight_q.dim() == 1, "minimax_allreduce_rms_qk: norm_weight_q must be 1D");
+    TORCH_CHECK(norm_weight_k.dim() == 1, "minimax_allreduce_rms_qk: norm_weight_k must be 1D");
+    TORCH_CHECK(norm_weight_q.is_contiguous(), "minimax_allreduce_rms_qk: norm_weight_q must be contiguous");
+    TORCH_CHECK(norm_weight_k.is_contiguous(), "minimax_allreduce_rms_qk: norm_weight_k must be contiguous");
     int64_t head_dim_q = q.size(-1);
     int64_t head_dim_k = k.size(-1);
     TORCH_CHECK(head_dim_q >= head_dim_k, "minimax_allreduce_rms_qk: head_dim_q must be >= head_dim_k");
+    TORCH_CHECK(head_dim_q == norm_weight_q.size(0), "minimax_allreduce_rms_qk: q hidden dim must match norm_weight_q");
+    TORCH_CHECK(head_dim_k == norm_weight_k.size(0), "minimax_allreduce_rms_qk: k hidden dim must match norm_weight_k");
+    TORCH_CHECK((head_dim_q * nranks) == kSupportedGlobalHeadDimQ && (head_dim_k * nranks) == kSupportedGlobalHeadDimK,
+        "minimax_allreduce_rms_qk: only global q/k dims 6144/1024 are currently supported");
 
     auto params = tensorrt_llm::kernels::minimax_ar::MiniMaxReduceRMSParams();
     params.nranks = static_cast<int>(nranks);

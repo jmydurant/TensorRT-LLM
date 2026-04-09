@@ -155,6 +155,7 @@ class MiniMaxRMSNorm(nn.Module):
         """
         # input_dtype = hidden_states.dtype
         # hidden_states = hidden_states.to(torch.float32)
+        hidden_states = hidden_states.contiguous()
         rms_norm_out = self.minimax_all_reduce_rms(hidden_states, self.weight, self.eps)
         return rms_norm_out
 

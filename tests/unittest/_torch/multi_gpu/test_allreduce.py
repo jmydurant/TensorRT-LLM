@@ -842,6 +842,9 @@ def run_minimax_allreduce_rms_qk_op(
         )
         assert not rank_q_input.is_contiguous()
         assert not rank_k_input.is_contiguous()
+        # MiniMaxM2Attention materializes the split views before calling the custom op.
+        rank_q_input = rank_q_input.contiguous()
+        rank_k_input = rank_k_input.contiguous()
 
     # rms weights should be sliced by rank
     rms_weights_q = rms_weights_q.reshape(tensor_parallel_size, -1)
