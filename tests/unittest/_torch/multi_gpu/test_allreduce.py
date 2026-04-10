@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -712,14 +712,14 @@ def run_minimax_allreduce_rms_op(input: torch.Tensor, tensor_parallel_size: int,
     input = input.cuda()
     rms_weights = rms_weights.cuda()
 
-    input = input.reshape(total_tokens, tensor_parallel_size,
-                          -1).to(torch.float32)
-    rms_weights = rms_weights.reshape(tensor_parallel_size,
-                                      -1).to(torch.float32)
-    rank_input = input[:, tensor_parallel_rank, :].contiguous()
-    rank_rms_weights = rms_weights[tensor_parallel_rank, :].contiguous()
+    rank_input = input.reshape(total_tokens, tensor_parallel_size,
+                               -1)[:, tensor_parallel_rank, :].contiguous()
+    rank_rms_weights = rms_weights.reshape(
+        tensor_parallel_size, -1)[tensor_parallel_rank, :].contiguous()
+
     # firstly, calculate the reference output for each rank
-    ref_output = rms_norm(input, rms_weights, eps)
+    ref_output = rms_norm(input.to(torch.float32),
+                          rms_weights.to(torch.float32), eps)
     ref_output = ref_output.reshape(total_tokens, tensor_parallel_size,
                                     -1).to(origin_dtype)
     ref_output = ref_output[:, tensor_parallel_rank, :]
@@ -897,6 +897,8 @@ def run_minimax_allreduce_rms_qk_single_rank(tensor_parallel_size,
     return True
 
 
+@pytest.mark.skipif(torch.cuda.device_count() != 4,
+                    reason="Requires exactly 4 GPUs for this test")
 @pytest.mark.parametrize("non_contiguous_input", [False, True],
                          ids=["contiguous", "split_qkv_view"])
 @pytest.mark.parametrize("mpi_pool_executor", [4], indirect=True)
