@@ -27,9 +27,9 @@ namespace kernels::minimax_ar
 namespace
 { // anonymous namespace
 
-template <int NRanks>
+constexpr int kMinimaxReduceRmsWarpSize = 32;
 
-#define MINIMAX_REDUCE_RMS_WARP_SIZE 32
+template <int NRanks>
 struct LamportComm
 {
     __device__ __forceinline__ LamportComm(void** workspace, int rank)
@@ -200,11 +200,11 @@ __device__ __forceinline__ void blockReduceSumRange(T* val, int rangeStart, int 
 template <uint32_t kNumThreads, typename T>
 __device__ __forceinline__ void local_warp_reduce_sum(T& value, uint32_t active_mask = 0xffffffffu)
 {
-    static_assert(kNumThreads >= 1 && kNumThreads <= MINIMAX_REDUCE_RMS_WARP_SIZE);
+    static_assert(kNumThreads >= 1 && kNumThreads <= kMinimaxReduceRmsWarpSize);
 #pragma unroll
     for (int mask = kNumThreads / 2; mask > 0; mask >>= 1)
     {
-        value += __shfl_xor_sync(active_mask, value, mask, MINIMAX_REDUCE_RMS_WARP_SIZE);
+        value += __shfl_xor_sync(active_mask, value, mask, kMinimaxReduceRmsWarpSize);
     }
 }
 
@@ -212,14 +212,14 @@ __device__ __forceinline__ void local_warp_reduce_sum(T& value, uint32_t active_
 template <uint32_t kNumThreads, typename T, int ArraySize = 4>
 __device__ __forceinline__ void local_warp_reduce_sum_array(T* value_ptr, uint32_t active_mask = 0xffffffffu)
 {
-    static_assert(kNumThreads >= 1 && kNumThreads <= MINIMAX_REDUCE_RMS_WARP_SIZE);
+    static_assert(kNumThreads >= 1 && kNumThreads <= kMinimaxReduceRmsWarpSize);
 #pragma unroll
     for (int i = 0; i < ArraySize; ++i)
     {
 #pragma unroll
         for (int mask = kNumThreads / 2; mask > 0; mask >>= 1)
         {
-            value_ptr[i] += __shfl_xor_sync(active_mask, value_ptr[i], mask, MINIMAX_REDUCE_RMS_WARP_SIZE);
+            value_ptr[i] += __shfl_xor_sync(active_mask, value_ptr[i], mask, kMinimaxReduceRmsWarpSize);
         }
     }
 }
@@ -403,8 +403,8 @@ __global__ void __launch_bounds__(1024) minimax_reduce_qk_rms_kernel_lamport_flo
     constexpr int RankKDim = OriginKDim / NRanks;
     constexpr int ThreadsPerRowQ = RankQDim / kElemsPerAccess<DType>;
     constexpr int ThreadsPerRowK = RankKDim / kElemsPerAccess<DType>;
-    constexpr int NumWarpQ = (ThreadsPerRowQ + MINIMAX_REDUCE_RMS_WARP_SIZE - 1) / MINIMAX_REDUCE_RMS_WARP_SIZE;
-    constexpr int NumWarpK = (ThreadsPerRowK + MINIMAX_REDUCE_RMS_WARP_SIZE - 1) / MINIMAX_REDUCE_RMS_WARP_SIZE;
+    constexpr int NumWarpQ = (ThreadsPerRowQ + kMinimaxReduceRmsWarpSize - 1) / kMinimaxReduceRmsWarpSize;
+    constexpr int NumWarpK = (ThreadsPerRowK + kMinimaxReduceRmsWarpSize - 1) / kMinimaxReduceRmsWarpSize;
     int tot_tokens = params.size_q / RankQDim;
     int tot_groups = (tot_tokens + TokenPerBlock - 1) / TokenPerBlock; // ceiling: last group may have 1-3 valid rows
 
@@ -422,13 +422,13 @@ __global__ void __launch_bounds__(1024) minimax_reduce_qk_rms_kernel_lamport_flo
     int access_id_in_token = threadIdx.x;
     int group_stride = gridDim.x;
 #endif
-    bool is_q = (access_id_in_token < NumWarpQ * MINIMAX_REDUCE_RMS_WARP_SIZE);
+    bool is_q = (access_id_in_token < NumWarpQ * kMinimaxReduceRmsWarpSize);
     int q_thread_idx = access_id_in_token;
-    int k_thread_idx = (access_id_in_token - (NumWarpQ * MINIMAX_REDUCE_RMS_WARP_SIZE));
+    int k_thread_idx = (access_id_in_token - (NumWarpQ * kMinimaxReduceRmsWarpSize));
     bool is_valid_token = is_q ? (access_id_in_token < ThreadsPerRowQ) : (k_thread_idx < ThreadsPerRowK);
     float4 clear_vec = get_neg_zero();
 
-    __shared__ float block_reduce_sum[TokenPerBlock][MINIMAX_REDUCE_RMS_WARP_SIZE + 1]; // 33 > warpQ + warpK
+    __shared__ float block_reduce_sum[TokenPerBlock][kMinimaxReduceRmsWarpSize + 1]; // 33 > warpQ + warpK
     __shared__ float global_scale_q[TokenPerBlock];
     __shared__ float global_scale_k[TokenPerBlock];
 
@@ -443,7 +443,7 @@ __global__ void __launch_bounds__(1024) minimax_reduce_qk_rms_kernel_lamport_flo
 
     // first step load rms params scale
     __nv_bfloat16 norm_weight[kElemsPerAccess<DType>]{};
-    if (access_id_in_token < NumWarpQ * MINIMAX_REDUCE_RMS_WARP_SIZE) // Q branch
+    if (access_id_in_token < NumWarpQ * kMinimaxReduceRmsWarpSize) // Q branch
     {
         // load rms params scale
         if (is_valid_token)
@@ -516,22 +516,22 @@ __global__ void __launch_bounds__(1024) minimax_reduce_qk_rms_kernel_lamport_flo
 
         // Local warp reduce:
         // here we use all threads to reduce warp_sum_variance
-        local_warp_reduce_sum_array<MINIMAX_REDUCE_RMS_WARP_SIZE, float, TokenPerBlock>(warp_sum_variance);
+        local_warp_reduce_sum_array<kMinimaxReduceRmsWarpSize, float, TokenPerBlock>(warp_sum_variance);
         // each warp write the warp reduce result to the shared memory
-        int line = threadIdx.x & (MINIMAX_REDUCE_RMS_WARP_SIZE - 1);
+        int line = threadIdx.x & (kMinimaxReduceRmsWarpSize - 1);
         if (line == 0)
         {
 #pragma unroll
             for (int _ = 0; _ < TokenPerBlock; ++_)
             {
-                block_reduce_sum[_][threadIdx.x / MINIMAX_REDUCE_RMS_WARP_SIZE] = warp_sum_variance[_];
+                block_reduce_sum[_][threadIdx.x / kMinimaxReduceRmsWarpSize] = warp_sum_variance[_];
             }
         }
         __syncthreads();
         int tid = threadIdx.x;
         // then two warps process q block reduce and k block reduce respectively
 
-        if (tid < MINIMAX_REDUCE_RMS_WARP_SIZE)
+        if (tid < kMinimaxReduceRmsWarpSize)
         {
             constexpr int kNumWarpQPow2 = next_pow2(NumWarpQ) > NRanks ? next_pow2(NumWarpQ) : NRanks;
             float local_sum[TokenPerBlock];
@@ -578,8 +578,8 @@ __global__ void __launch_bounds__(1024) minimax_reduce_qk_rms_kernel_lamport_flo
             }
         }
         // k branch
-        else if (threadIdx.x >= MINIMAX_REDUCE_RMS_WARP_SIZE * NumWarpQ
-            && threadIdx.x < MINIMAX_REDUCE_RMS_WARP_SIZE * (NumWarpQ + 1))
+        else if (threadIdx.x >= kMinimaxReduceRmsWarpSize * NumWarpQ
+            && threadIdx.x < kMinimaxReduceRmsWarpSize * (NumWarpQ + 1))
         {
             constexpr int kNumWarpKPow2 = next_pow2(NumWarpK) > NRanks ? next_pow2(NumWarpK) : NRanks;
             float local_sum[TokenPerBlock];
@@ -700,16 +700,15 @@ __global__ void __launch_bounds__(1024) minimax_reduce_qk_rms_kernel_lamport_flo
 
 int get_sm_count()
 {
-    static int sm_count = 0;
-    if (sm_count == 0)
+    static int const smCount = []()
     {
-        int device_id;
-        TLLM_CUDA_CHECK(cudaGetDevice(&device_id));
-        cudaDeviceProp device_prop;
-        cudaGetDeviceProperties(&device_prop, device_id);
-        sm_count = device_prop.multiProcessorCount;
-    }
-    return sm_count;
+        int deviceId;
+        TLLM_CUDA_CHECK(cudaGetDevice(&deviceId));
+        cudaDeviceProp deviceProp;
+        TLLM_CUDA_CHECK(cudaGetDeviceProperties(&deviceProp, deviceId));
+        return deviceProp.multiProcessorCount;
+    }();
+    return smCount;
 }
 
 template <typename DType, int NRanks>
@@ -777,9 +776,9 @@ void minimax_reduce_rms_kernel_launcher_float4(MiniMaxReduceRMSParams const& par
     int cluster_num = tot_groups;
     int access_per_row_q = params.hidden_dim / kElemsPerAccess<DType>;
     int access_per_row_k = (params.allreduce_in_k != nullptr) ? (params.hidden_dim_k / kElemsPerAccess<DType>) : 0;
-    auto divUp = [](int a, int b) { return (a + b - 1) / b * b; }; // round up to the nearest multiple of b
-    int block_size = divUp(access_per_row_q, MINIMAX_REDUCE_RMS_WARP_SIZE)
-        + ((params.allreduce_in_k != nullptr) ? divUp(access_per_row_k, MINIMAX_REDUCE_RMS_WARP_SIZE) : 0);
+    auto const divUp = [](int a, int b) { return (a + b - 1) / b * b; }; // round up to the nearest multiple of b
+    int block_size = divUp(access_per_row_q, kMinimaxReduceRmsWarpSize)
+        + ((params.allreduce_in_k != nullptr) ? divUp(access_per_row_k, kMinimaxReduceRmsWarpSize) : 0);
     int grid_size = (std::min(sm_count, cluster_num * cluster_size) / cluster_size) * cluster_size;
 
     cudaLaunchConfig_t cfg;
@@ -799,32 +798,15 @@ void minimax_reduce_rms_kernel_launcher_float4(MiniMaxReduceRMSParams const& par
     cfg.numAttrs = SM >= 90 ? 2 : 0;
 
     bool trigger_completion_at_end = params.trigger_completion_at_end;
-    bool is_qk = (params.allreduce_in_k != nullptr);
     if (trigger_completion_at_end)
     {
-        if (is_qk)
-        {
-            TLLM_CUDA_CHECK(cudaLaunchKernelEx(&cfg,
-                minimax_reduce_qk_rms_kernel_lamport_float4<DType, NRanks, OriginQDim, OriginKDim, 4, true>, params));
-        }
-        else
-        {
-            TLLM_CUDA_CHECK(cudaLaunchKernelEx(&cfg,
-                minimax_reduce_qk_rms_kernel_lamport_float4<DType, NRanks, OriginQDim, OriginKDim, 4, true>, params));
-        }
+        TLLM_CUDA_CHECK(cudaLaunchKernelEx(
+            &cfg, minimax_reduce_qk_rms_kernel_lamport_float4<DType, NRanks, OriginQDim, OriginKDim, 4, true>, params));
     }
     else
     {
-        if (is_qk)
-        {
-            TLLM_CUDA_CHECK(cudaLaunchKernelEx(&cfg,
-                minimax_reduce_qk_rms_kernel_lamport_float4<DType, NRanks, OriginQDim, OriginKDim, 4, false>, params));
-        }
-        else
-        {
-            TLLM_CUDA_CHECK(cudaLaunchKernelEx(&cfg,
-                minimax_reduce_qk_rms_kernel_lamport_float4<DType, NRanks, OriginQDim, OriginKDim, 4, false>, params));
-        }
+        TLLM_CUDA_CHECK(cudaLaunchKernelEx(&cfg,
+            minimax_reduce_qk_rms_kernel_lamport_float4<DType, NRanks, OriginQDim, OriginKDim, 4, false>, params));
     }
 }
 

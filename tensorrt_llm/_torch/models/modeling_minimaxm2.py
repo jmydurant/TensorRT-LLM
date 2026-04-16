@@ -143,18 +143,6 @@ class MiniMaxRMSNorm(nn.Module):
         copy_weight(self.weight, weight)
 
     def forward(self, hidden_states: torch.Tensor):
-        """
-        input_dtype = hidden_states.dtype
-        hidden_states = hidden_states.to(torch.float32)
-
-        variance = hidden_states.pow(2).mean(-1, keepdim=True) / self.mapping.tp_size
-        variance = self.all_reduce(variance)
-
-        hidden_states = hidden_states * torch.rsqrt(variance + self.eps)
-        hidden_states = self.weight * hidden_states.to(input_dtype)
-        """
-        # input_dtype = hidden_states.dtype
-        # hidden_states = hidden_states.to(torch.float32)
         hidden_states = hidden_states.contiguous()
         rms_norm_out = self.minimax_all_reduce_rms(hidden_states, self.weight, self.eps)
         return rms_norm_out
