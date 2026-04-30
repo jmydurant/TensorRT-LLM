@@ -239,10 +239,12 @@ public:
 
         FmhaAutoTuner autoTuner(options, optionsFromArgs, params.mMultiProcessorCount);
         std::tie(options, optionsFromArgs, ctaDim) = autoTuner.selectKernel();
+
         // Check if the options are valid or not.
         checkFmhaOptions(options, optionsFromArgs);
         // Update the options if needed.
         updateFmhaOptions(options, optionsFromArgs);
+
         // HOTFIX: FmhaDispatcher path may leave multiCtasKvCounter/Scratch null when use GmemReduction. Force Disabled
         // here so as to avoid crashing.
         // TODO: add scratch allocation and re-enable GmemReduction.
@@ -255,6 +257,7 @@ public:
                 options.mMultiCtasKvMode = tensorrt_llm::kernels::MultiCtasKvMode::Disabled;
             }
         }
+
         // The number of CtasQ and CtasKv per sequence, Ctas in the Y dimension, and Ctas in the Z
         // dimension.
         computeNumCtas(options, params.mMultiProcessorCount);
@@ -276,7 +279,8 @@ public:
 
     void algoFilterForCubinPath(FmhaOptions& options) const
     {
-        if (!isContextKernel(options.mFmhaKernelType) && options.mMaskType == TrtllmGenAttentionMaskType::Dense)
+        if (!isContextKernel(options.mFmhaKernelType) && options.mMaskType == TrtllmGenAttentionMaskType::Dense
+            && !options.mIsMlaGen && !isTokenSparse(options.mSparseType))
         {
             options.mMaskType = TrtllmGenAttentionMaskType::Causal;
         }
@@ -298,12 +302,11 @@ public:
 
         FmhaAutoTuner autoTuner(options, optionsFromArgs, params.mMultiProcessorCount);
         std::tie(options, optionsFromArgs, ctaDim) = autoTuner.selectKernel();
+
         // Check if the options are valid or not.
         checkFmhaOptions(options, optionsFromArgs);
         // Update the options if needed.
         updateFmhaOptions(options, optionsFromArgs);
-        // The number of CtasQ and CtasKv per sequence, Ctas in the Y dimension, and Ctas in the Z
-        // dimension.
 
         // HOTFIX: FmhaDispatcher path may leave multiCtasKvCounter/Scratch null when use GmemReduction. Force Disabled
         // here so as to avoid crashing.
@@ -318,6 +321,8 @@ public:
             }
         }
 
+        // The number of CtasQ and CtasKv per sequence, Ctas in the Y dimension, and Ctas in the Z
+        // dimension.
         auto [numCtasX, numCtasY, numCtasZ] = computeNumCtas(options, params.mMultiProcessorCount);
 
         // Set the launch grid size.
@@ -378,18 +383,20 @@ public:
             KernelParams kernelParams = fmha::KernelParamsSetup::setKernelParams(options, grid[0], grid[1], grid[2],
                 fmhaData.mMetaData.cumSeqLensQPtrD, fmhaData.mMetaData.cumSeqLensKvPtrD, fmhaData.mMetaData.seqLensKvD,
                 fmhaData.mInputBuffers.qBasePtr, fmhaData.mInputBuffers.kBasePtr, fmhaData.mInputBuffers.vBasePtr,
-                fmhaData.mScales.kSfBasePtr, fmhaData.mScales.vSfBasePtr, fmhaData.mMetaData.kvPageIdxD,
+                fmhaData.mScales.kSfBasePtr, fmhaData.mScales.vSfBasePtr,
+                fmhaData.mInputBuffers.slidingWindowKvPoolBasePtr, fmhaData.mMetaData.kvPageIdxD,
                 fmhaData.mScales.outputScaleD, fmhaData.mScales.scaleSoftmaxLog2D, fmhaData.mScales.kvSfScaleD,
                 fmhaData.mScales.oSfScaleD, fmhaData.mInputBuffers.customMaskPtrD,
                 fmhaData.mInputBuffers.customMaskOffsetsPtrD, fmhaData.mMetaData.firstSparseMaskOffsetsKvPtrD,
-                fmhaData.mScales.sageAttnSfsQPtrD, fmhaData.mScales.sageAttnSfsKPtrD, fmhaData.mScales.sageAttnSfsPPtrD,
-                fmhaData.mScales.sageAttnSfsVPtrD, fmhaData.mInputBuffers.attentionSinksPtrD,
-                fmhaData.mOutputBuffers.oPtrD, fmhaData.mScales.oSfPtrD, fmhaData.mOutputBuffers.multiCtasKvCounterPtrD,
-                fmhaData.mOutputBuffers.partialOPtrD, fmhaData.mOutputBuffers.partialStatsPtrD,
-                fmhaData.mOutputBuffers.skipSoftmaxStatsPtrD, fmhaData.mOutputBuffers.softmaxStatsD,
-                fmhaData.mOutputBuffers.oDebugPtrD, fmhaData.mScales.softmaxScale, fmhaData.mMetaData.inflateMax,
-                fmhaData.mScales.kvSfScale, fmhaData.mScales.oSfScale, fmhaData.mMetaData.startTokenIdxSfO,
-                options.mUseBlockSparseAttention, options.mUsesSharedPagedKvIdx);
+                fmhaData.mMetaData.sparseMlaTopKLensPtrD, fmhaData.mScales.sageAttnSfsQPtrD,
+                fmhaData.mScales.sageAttnSfsKPtrD, fmhaData.mScales.sageAttnSfsPPtrD, fmhaData.mScales.sageAttnSfsVPtrD,
+                fmhaData.mInputBuffers.attentionSinksPtrD, fmhaData.mOutputBuffers.oPtrD, fmhaData.mScales.oSfPtrD,
+                fmhaData.mOutputBuffers.multiCtasKvCounterPtrD, fmhaData.mOutputBuffers.partialOPtrD,
+                fmhaData.mOutputBuffers.partialStatsPtrD, fmhaData.mOutputBuffers.skipSoftmaxStatsPtrD,
+                fmhaData.mOutputBuffers.softmaxStatsD, fmhaData.mOutputBuffers.oDebugPtrD,
+                fmhaData.mScales.softmaxScale, fmhaData.mMetaData.inflateMax, fmhaData.mScales.kvSfScale,
+                fmhaData.mScales.oSfScale, fmhaData.mMetaData.startTokenIdxSfO, options.mUseBlockSparseAttention,
+                options.mUsesSharedPagedKvIdx);
 
             launchFmhaKernel(kernelParams, kernelMeta, func, grid, options, params.stream);
             // Run the separate reduction kernel if needed.
@@ -666,6 +673,7 @@ private:
         fmhaData.mMetaData.cumSeqLensKvPtrD = params.cumSeqLensKvPtr;
         fmhaData.mMetaData.seqLensKvD = params.seqLensKvPtr;
         fmhaData.mMetaData.firstSparseMaskOffsetsKvPtrD = params.firstSparseMaskOffsetsKvPtr;
+        fmhaData.mMetaData.sparseMlaTopKLensPtrD = params.ptrSparseMlaTopKLens;
         fmhaData.mMetaData.kvPageIdxD = params.kvPageIdxPtr;
         fmhaData.mMetaData.inflateMax = 0.0F; // Default value for inflate max
         fmhaData.mMetaData.startTokenIdxSfO = params.mSfStartTokenIdx;
@@ -697,6 +705,7 @@ private:
         fmhaData.mInputBuffers.qBasePtr = qPtr;
         fmhaData.mInputBuffers.kBasePtr = kPtr;
         fmhaData.mInputBuffers.vBasePtr = vPtr;
+        fmhaData.mInputBuffers.slidingWindowKvPoolBasePtr = params.slidingWindowKvPoolBasePtr;
         fmhaData.mInputBuffers.attentionSinksPtrD = params.attentionSinksPtr;
         fmhaData.mInputBuffers.customMaskPtrD = params.customMaskPtr;
         fmhaData.mInputBuffers.customMaskOffsetsPtrD = params.customMaskOffsetsPtr;
@@ -790,6 +799,7 @@ private:
         // Sparse attention (MLA / MQA / GQA)
         options.mSparseType = params.mSparseAttention;
         options.mSparseAttnTopK = params.mSparseTopK;
+        options.mHasSlidingWindowKvPool = isMlaGenKernel(params) && isDynamicTokenSparse(params.mSparseAttention);
 
         // Softmax optimization
         options.mSkipSoftmaxThresholdScaleFactor = params.mSkipSoftmaxThresholdScaleFactor;
@@ -1032,7 +1042,8 @@ private:
     // Is it MLA generation kernel ?
     inline bool isMlaGenKernel(RunnerParams const& params) const
     {
-        return params.mHeadDimQk == 576 && params.mHeadDimV == 512;
+        return (params.mHeadDimQk == 576 && params.mHeadDimV == 512)
+            || (isTokenSparse(params.mSparseAttention) && params.mHeadDimQk == 512 && params.mHeadDimV == 512);
     }
 
     // Compute the number of CTAs in X, Y and Z dimension and the cluster size in the X dimension.
