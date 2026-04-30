@@ -129,19 +129,17 @@ class KvCacheCreator:
     def _get_model_kv_cache_manager_cls(self, model_engine: PyTorchModelEngine):
         cls = get_kv_cache_manager_cls(model_engine.model.model_config,
                                        self._kv_cache_config)
-        return self._fallback_if_unsupported_kv_cache_manager_v2(cls)
+        self._warn_if_unsupported_kv_cache_manager_v2(cls)
+        return cls
 
-    def _fallback_if_unsupported_kv_cache_manager_v2(self,
-                                                     kv_cache_manager_cls):
+    def _warn_if_unsupported_kv_cache_manager_v2(self, kv_cache_manager_cls):
         if kv_cache_manager_cls == KVCacheManagerV2:
             if self._kv_connector_manager is not None or (
                     self._max_beam_width is not None
-                    and self._max_beam_width > 1) or self._is_disagg:
+                    and self._max_beam_width > 1):
                 logger.warning(
-                    "KVCacheManagerV2 is not supported with kv_connector_manager, beam width > 1, "
-                    "or disaggregated serving. Falling back to KVCacheManager.")
-                return KVCacheManager
-        return kv_cache_manager_cls
+                    "KVCacheManagerV2 is not supported with kv_connector_manager or beam width > 1."
+                )
 
     def _get_kv_size_per_token(self):
         model_config = self._model_engine.model.model_config
@@ -691,7 +689,7 @@ class KvCacheCreator:
         # Get the appropriate KV cache manager class for the draft model
         draft_kv_cache_manager_cls = get_kv_cache_manager_cls(
             effective_draft_config, self._kv_cache_config)
-        draft_kv_cache_manager_cls = self._fallback_if_unsupported_kv_cache_manager_v2(
+        self._warn_if_unsupported_kv_cache_manager_v2(
             draft_kv_cache_manager_cls)
 
         estimating_kv_cache = estimating_kv_cache and not self._skip_est
