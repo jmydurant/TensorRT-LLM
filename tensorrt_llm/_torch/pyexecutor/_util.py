@@ -136,12 +136,10 @@ class KvCacheCreator:
         if kv_cache_manager_cls == KVCacheManagerV2:
             if self._kv_connector_manager is not None or (
                     self._max_beam_width is not None
-                    and self._max_beam_width > 1
-            ) or self._kv_cache_config.event_buffer_max_size > 0 or self._is_disagg:
+                    and self._max_beam_width > 1) or self._is_disagg:
                 logger.warning(
                     "KVCacheManagerV2 is not supported with kv_connector_manager, beam width > 1, "
-                    "event buffer max size > 0, or disaggregated serving. Falling back to KVCacheManager."
-                )
+                    "or disaggregated serving. Falling back to KVCacheManager.")
                 return KVCacheManager
         return kv_cache_manager_cls
 
