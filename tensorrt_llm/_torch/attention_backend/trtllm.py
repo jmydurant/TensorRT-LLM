@@ -16,7 +16,8 @@ from tensorrt_llm._torch.pyexecutor.resource_manager import KVCacheManager
 from tensorrt_llm._utils import get_sm_version, maybe_pin_memory, prefer_pinned
 from tensorrt_llm.bindings.internal import thop
 from tensorrt_llm.functional import AttentionMaskType
-from tensorrt_llm.llmapi import SkipSoftmaxAttentionConfig
+from tensorrt_llm.llmapi import (DeepSeekV4SparseAttentionConfig,
+                                 SkipSoftmaxAttentionConfig)
 from tensorrt_llm.logger import logger
 from tensorrt_llm.models.modeling_utils import QuantConfig
 
@@ -2039,6 +2040,29 @@ class TrtllmAttention(AttentionBackend[TrtllmAttentionMetadata]):
                     q, k, metadata, **kwargs)
                 sparse_attn_indices_block_size = self.sparse_attention_config.get_indices_block_size(
                 )
+                if isinstance(self.sparse_attention_config,
+                              DeepSeekV4SparseAttentionConfig):
+                    # TODO: refactor this part of code.
+                    ratio = self.compress_ratio
+                    if hasattr(metadata, 'sparse_mla_topk_lens'):
+                        num_ctx_tokens = metadata.num_ctx_tokens
+                        num_tokens = metadata.num_tokens
+                        topk_lens = metadata.sparse_mla_topk_lens[ratio]
+                        if attention_input_type == AttentionInputType.context_only:
+                            sparse_mla_topk_lens = topk_lens[:num_ctx_tokens]
+                        elif attention_input_type == AttentionInputType.generation_only:
+                            sparse_mla_topk_lens = topk_lens[
+                                num_ctx_tokens:num_tokens]
+                        else:
+                            sparse_mla_topk_lens = topk_lens[:num_tokens]
+                    window_size = self.sparse_attention_config.window_size
+                    compressed_len = metadata.max_compressed_indices[ratio]
+                    num_sparse_topk = compressed_len + window_size
+                    if ratio > 1:
+                        # host_kv_cache_pool_pointers carries the SWA pool. The optional extra
+                        # pointer is the compressed pool used for non-SWA sparse MLA tokens.
+                        compressed_kv_cache_pool_ptr = metadata.sparse_mla_base_ptrs[
+                            ratio]
 
         # Compute FlashMLA tile-scheduler metadata once per forward pass.
         # The flag is reset in prepare_flash_mla() and update_for_spec_dec() to trigger

@@ -79,6 +79,7 @@ add_library(
   mambaConv1dOp.cpp
   moeOp.cpp
   moeUtilOp.cpp
+  moeGateOp.cpp
   moeCommOp.cpp
   moeAlltoAllOp.cpp
   moeLoadBalanceOp.cpp
@@ -93,6 +94,7 @@ add_library(
   IndexerKCacheGatherOp.cpp
   IndexerKCacheScatterOp.cpp
   IndexerTopKOp.cpp
+  mlaRopeInplaceOp.cpp
   ncclCommunicatorOp.cpp
   parallelDecodeKVCacheUpdateOp.cpp
   redrafterCurandOp.cpp
@@ -115,7 +117,9 @@ add_library(
   dsv3RopeOp.cpp
   fusedGemmAllreduceOp.cpp
   convertReqIndexToGlobalOp.cpp
-  trtllmGenQKVProcessOp.cpp)
+  trtllmGenQKVProcessOp.cpp
+  mhcOp.cpp
+  compressorOp.cpp)
 set_property(TARGET th_common PROPERTY POSITION_INDEPENDENT_CODE ON)
 target_link_libraries(
   th_common PRIVATE ${TORCH_LIBRARIES} th_utils ${Python3_LIBRARIES}
