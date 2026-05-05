@@ -42,7 +42,8 @@ class GatedMLP(nn.Module):
         self.hidden_size = hidden_size
         self.intermediate_size = intermediate_size
         self.activation = activation
-        self.swiglu_limit = float(swiglu_limit) if swiglu_limit is not None else None
+        self.swiglu_limit = float(
+            swiglu_limit) if swiglu_limit is not None else None
 
         config = config or ModelConfig()
         self.mapping = config.mapping

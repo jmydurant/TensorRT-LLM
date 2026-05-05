@@ -10,10 +10,10 @@ from .moe_load_balancer import (MoeLoadBalancer,
                                 moe_load_balancer_set_repeated_for_next_layer)
 from .quantization import FusedMoEQuantScalesFP8
 from .routing import (BaseMoeRoutingMethod, DeepSeekV3MoeRoutingMethod,
-                      DefaultMoeRoutingMethod,
+                      DeepSeekV4MoeRoutingMethod, DefaultMoeRoutingMethod,
                       Llama4RenormalizeMoeRoutingMethod,
-                      LoadBalancedMoeRoutingMethod, DeepSeekV4MoeRoutingMethod,
-                      MiniMaxM2MoeRoutingMethod, RenormalizeMoeRoutingMethod,
+                      LoadBalancedMoeRoutingMethod, MiniMaxM2MoeRoutingMethod,
+                      RenormalizeMoeRoutingMethod,
                       RenormalizeNaiveMoeRoutingMethod, RoutingMethodType,
                       SparseMixerMoeRoutingMethod, StaticMoeRoutingMethod,
                       create_load_balanced_logits)

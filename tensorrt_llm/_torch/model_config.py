@@ -20,8 +20,7 @@ from tensorrt_llm.bindings import LayerType as LayerTypeCpp
 from tensorrt_llm.functional import AllReduceStrategy
 from tensorrt_llm.llmapi.llm_args import (DeepSeekSparseAttentionConfig,
                                           DeepSeekV4SparseAttentionConfig,
-                                          KvCacheConfig,
-                                          MoeLoadBalancerConfig)
+                                          KvCacheConfig, MoeLoadBalancerConfig)
 from tensorrt_llm.logger import logger
 from tensorrt_llm.mapping import Mapping
 from tensorrt_llm.models.modeling_utils import QuantConfig
@@ -679,9 +678,8 @@ class ModelConfig(Generic[TConfig]):
                         pretrained_config, 'compress_ratios', None)
                     num_base_layers = pretrained_config.num_hidden_layers
                     spec_config = kwargs.get('spec_config', None)
-                    mtp_enabled = (
-                        spec_config is not None
-                        and spec_config.spec_dec_mode.is_mtp_one_model())
+                    mtp_enabled = (spec_config is not None and
+                                   spec_config.spec_dec_mode.is_mtp_one_model())
                     sparse_attention_config = kwargs.get(
                         'sparse_attention_config')
                     if sparse_attention_config:
@@ -694,13 +692,13 @@ class ModelConfig(Generic[TConfig]):
 
                     if (checkpoint_compress_ratios is not None
                             and (compress_ratios is None
-                                 or len(checkpoint_compress_ratios) >
-                                 len(compress_ratios))):
+                                 or len(checkpoint_compress_ratios)
+                                 > len(compress_ratios))):
                         compress_ratios = checkpoint_compress_ratios
 
                     if window_size is None:
-                        window_size = getattr(pretrained_config,
-                                              'window_size', None)
+                        window_size = getattr(pretrained_config, 'window_size',
+                                              None)
                     if window_size is None:
                         window_size = pretrained_config.sliding_window
 
